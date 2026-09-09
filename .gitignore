@@ -1,0 +1,13 @@
+# 虚拟环境与缓存
+.venv/
+__pycache__/
+*.pyc
+
+# 运行日志
+*.log
+
+# 本地运行数据（用户授权名单、记账流水等，不上传）
+data/
+
+# Bot Token（绝不入库）
+token.txt

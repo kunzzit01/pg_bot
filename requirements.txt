@@ -1,0 +1,2 @@
+# Bot 本体只依赖 python-telegram-bot；[job-queue] 必须有 —— 自动日切、定时群发都靠它
+python-telegram-bot[job-queue]>=21.0,<22.0

@@ -19,10 +19,26 @@ docker logs --tail 3 newbot_pg1_container
 bash ~/newbot_pg1/deploy.sh
 ```
 
-- 代码仓库：`https://github.com/kunzzit01/bot_pg`，VPS 上 clone 在 `~/newbot_pg1`。
+- 代码仓库：`https://github.com/kunzzit01/pg_bot`（就是本仓库），VPS 上 clone 在 `~/newbot_pg1`。
 - `~/newbot_pg1/deploy/update.sh` 是幂等的：`git pull` → `docker build` → 删旧容器 → 用同样参数重新 `docker run`；只动自己的容器，不影响机器上其他容器。
 - 数据卷固定挂在 `~/newbot_pg1/data/`，重建容器不会丢账本。
-- **凭据只在 `~/newbot_pg1/.env`，不在代码 / 不在 git 里**（源码里只有 `TOKEN = os.environ["BOT_TOKEN"]`）。
+- **凭据只在 `~/newbot_pg1/.env`，不在代码 / 不在 git / 不在镜像里**（源码里只有 `TOKEN = os.environ["BOT_TOKEN"]`；`.dockerignore` 把 `.env` 挡在镜像外）。
+- 部署必需的四个文件都在仓库里：`Dockerfile`、`requirements.txt`、`deploy/update.sh`、`.env.example`（`.dockerignore` 负责不把 `data/`、`WebBot/`、`.env` 打进镜像）。
+
+### 从旧仓库（`kunzzit01/bot_pg`）切到本仓库
+
+`~/newbot_pg1` 之前 clone 的是另一个仓库 `bot_pg`，两者历史不相干，直接 `git pull` 会报错、什么都不会更新。
+切过来（`data/` 和 `.env` 是未跟踪文件，原地保留）：
+
+```bash
+cd ~/newbot_pg1
+cp -a data ~/data.bak.$(date +%F-%H%M)     # 先备份账本
+cp -a .env ~/env.bak.$(date +%F-%H%M)      # 先备份凭据
+git remote set-url origin https://github.com/kunzzit01/pg_bot.git
+git fetch origin main
+git checkout -f -B main origin/main        # 强切到本仓库的 main
+bash deploy/update.sh                      # 用新代码重建容器
+```
 
 ### 换 Token（改 `.env` 才生效）
 

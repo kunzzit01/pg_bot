@@ -1,0 +1,24 @@
+# 凭据绝不进镜像：token 只用 --env-file 注入（.env 必须走 docker run，不能 COPY 进去）
+.env
+
+# 运行数据也不进镜像：data/ 是用 -v 挂进来的卷
+data/
+
+# 另一个独立部署（WebBot 有自己的 Dockerfile）
+WebBot/
+
+# 版本库、缓存、虚拟环境
+.git/
+.gitignore
+.gitattributes
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# 文档与本地脚本
+*.md
+*.bat
+.zcode/
+.zcodeignore
+*.log

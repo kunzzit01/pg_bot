@@ -3316,9 +3316,18 @@ def start_web_console():
     """把 Bot 侧账本原语注入网页控制台并启动内嵌 HTTP 服务。
     只配置了 WEB_CONSOLE_SECRET 才启用；未配置时 Bot 行为与原来完全一致。"""
     if webconsole is None:
+        logger.warning(
+            "⚠️ 账单明细网页没启用：镜像里没有 webconsole.py（旧代码的镜像会出现这种情况），"
+            "请确认部署的是本仓库的代码并重新 build"
+        )
         return
     secret = os.environ.get("WEB_CONSOLE_SECRET", "").strip()
     if not secret:
+        logger.warning(
+            "⚠️ 账单明细网页没启用：.env 里没设 WEB_CONSOLE_SECRET，"
+            "账单卡片上不会出现「📋 账单明细」按钮。要开就设 WEB_CONSOLE_SECRET"
+            "（容器里还要 WEB_CONSOLE_BIND=0.0.0.0 + WEB_CONSOLE_PORT，并把端口映射出来），再重建容器"
+        )
         return
     try:
         httpd = webconsole.start(secret, {

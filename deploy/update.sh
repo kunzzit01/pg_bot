@@ -4,8 +4,8 @@
 #
 #  用法：bash deploy/update.sh
 #       换 token：BOT_TOKEN=<BotFather 给的新token> bash deploy/update.sh
-#       开网页：.env 里设 WEB_CONSOLE_PORT / WEB_CONSOLE_BIND 后，
-#               PORT=<端口> bash deploy/update.sh   # 把端口映射出来
+#       开网页：PORT=<宿主机端口> bash deploy/update.sh
+#               （容器里网页监听 WEB_CONSOLE_PORT，默认 8787，本脚本自动读 .env）
 #
 #  它做的事：git pull -> docker build -> 删旧容器 -> 用同样的参数重新 docker run
 #  数据卷固定挂在仓库目录的 data/ 下，重建容器不会丢账本。
@@ -22,7 +22,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 CONTAINER="${CONTAINER:-newbot_pg1_container}"
 IMAGE="${IMAGE:-newbot_pg1_image:latest}"
 DATA_DIR="$(pwd)/data"
-PORT="${PORT:-}"
+PORT="${PORT:-}"   # 对外端口；留空则不映射（不映射就打不开账单明细网页）
 
 if ! command -v docker >/dev/null 2>&1; then
   echo "!!  找不到 docker 命令，请确认当前用户在 docker 组里" >&2
@@ -55,6 +55,21 @@ if [ -n "${BOT_TOKEN:-}" ]; then
   echo "    已更新 .env 里的 BOT_TOKEN（bot id ${BOT_TOKEN%%:*}），旧 token 随之作废"
 fi
 
+# 容器里网页监听哪个端口：跟 .env 的 WEB_CONSOLE_PORT 保持一致（默认 8787）
+CONSOLE_PORT="$(grep -E '^WEB_CONSOLE_PORT=' .env 2>/dev/null | tail -1 | cut -d= -f2 | tr -d '[:space:]')"
+CONSOLE_PORT="${CONSOLE_PORT:-8787}"
+
+# 端口预检查：必须在删旧容器之前做，否则 run 失败会让 bot 直接掉线（线上教训）
+if [ -n "${PORT}" ]; then
+  taken="$(docker ps --filter "publish=${PORT}" --format '{{.Names}}' | grep -vx "${CONTAINER}" || true)"
+  if [ -n "${taken}" ]; then
+    echo "!!  宿主机端口 ${PORT} 已经被别的容器占用：$(echo "${taken}" | tr '\n' ' ')" >&2
+    echo "    换一个对外端口重跑，例如： PORT=8788 bash deploy/update.sh" >&2
+    echo "    （记得把 .env 里的 WEB_CONSOLE_BASE_URL 改成同一个端口的地址，按钮才指得对）" >&2
+    exit 1
+  fi
+fi
+
 echo "==> 2/5 准备数据目录 ${DATA_DIR}"
 mkdir -p "${DATA_DIR}"
 
@@ -67,15 +82,14 @@ if docker ps -a --format '{{.Names}}' | grep -qx "${CONTAINER}"; then
   echo "    已移除旧容器（数据卷保留在 ${DATA_DIR}）"
 fi
 
-# 要开账单明细网页时把端口映射出来（.env 里得同时设 WEB_CONSOLE_BIND=0.0.0.0）
+# ${PORT_ARGS[@]+...} 的写法是为了空数组也能通过 set -u（老 bash 也能跑）
 PORT_ARGS=()
 if [ -n "${PORT}" ]; then
-  PORT_ARGS=(-p "${PORT}:${PORT}")
-  echo "    映射端口 ${PORT}:${PORT}"
+  PORT_ARGS=(-p "${PORT}:${CONSOLE_PORT}")
+  echo "    映射端口 ${PORT}(宿主机) -> ${CONSOLE_PORT}(容器内网页)"
 fi
 
-# ${PORT_ARGS[@]+...} 的写法是为了空数组也能通过 set -u（老 bash 也能跑）
-docker run -d \
+if ! docker run -d \
   --name "${CONTAINER}" \
   --restart unless-stopped \
   --env-file .env \
@@ -83,6 +97,14 @@ docker run -d \
   ${PORT_ARGS[@]+"${PORT_ARGS[@]}"} \
   -v "${DATA_DIR}:/app/data" \
   "${IMAGE}" >/dev/null
+then
+  echo "!!  新容器没起来（端口被占之类）。先用「不带端口映射」的方式让 bot 上线：" >&2
+  echo "     cd $(pwd) && docker rm -f ${CONTAINER} && docker run -d --name ${CONTAINER} \\" >&2
+  echo "       --restart unless-stopped --env-file .env -e BOT_DATA_DIR=/app/data \\" >&2
+  echo "       -v \"$(pwd)/data:/app/data\" ${IMAGE}" >&2
+  echo "     （这样 bot 正常，只是账单明细网页暂时从外面打不开）" >&2
+  exit 1
+fi
 
 echo "==> 5/5 启动日志"
 sleep 3

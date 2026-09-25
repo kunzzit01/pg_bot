@@ -1,7 +1,56 @@
 # 记账 Bot · Hostinger VPS Docker 部署记录
 
-> 部署日期：2026-09-10 · 服务器：srv1808383（Hostinger VPS，已装 Docker）
-> 结果：新容器 `ledgerbot_container` 成功运行，与旧容器 `newbot_pg1_container` 并行互不影响。
+> 服务器：srv1808383（Hostinger VPS，已装 Docker，IPv4 `187.127.125.136` / IPv6 `2a02:4780:5e:74bf::1`）
+> **当前部署位置：`~/newbot_pg1`（容器 `newbot_pg1_container`，镜像 `newbot_pg1_image:latest`）**
+
+---
+
+## 〇、当前部署速查（日常就按这个来）
+
+```bash
+# 更新线上机器人：拉代码 → 重建镜像 → 重建容器 → 打日志
+cd ~/newbot_pg1 && git pull && bash deploy/update.sh
+docker logs --tail 3 newbot_pg1_container
+```
+
+或者一条搞定（就是上面两条，包在仓库根目录的 `deploy.sh` 里）：
+
+```bash
+bash ~/newbot_pg1/deploy.sh
+```
+
+- 代码仓库：`https://github.com/kunzzit01/bot_pg`，VPS 上 clone 在 `~/newbot_pg1`。
+- `~/newbot_pg1/deploy/update.sh` 是幂等的：`git pull` → `docker build` → 删旧容器 → 用同样参数重新 `docker run`；只动自己的容器，不影响机器上其他容器。
+- 数据卷固定挂在 `~/newbot_pg1/data/`，重建容器不会丢账本。
+- **凭据只在 `~/newbot_pg1/.env`，不在代码 / 不在 git 里**（源码里只有 `TOKEN = os.environ["BOT_TOKEN"]`）。
+
+### 换 Token（改 `.env` 才生效）
+
+token 是容器启动时用 `--env-file .env` 注入的，所以**光 `git pull` 换不掉**，必须连 `.env` 一起改：
+
+```bash
+# 方式一：直接改 .env 里那一行，再重建容器
+cd ~/newbot_pg1 && sed -i "s|^BOT_TOKEN=.*|BOT_TOKEN=<新token>|" .env && bash deploy/update.sh
+
+# 方式二：部署目录里的 update.sh 支持带 token 跑（会自己写 .env，其余行保留）
+cd ~/newbot_pg1 && BOT_TOKEN='<新token>' bash deploy/update.sh
+```
+
+换完验证容器里拿到的是新 token（`printenv` 出来的是 `<bot id>:<密钥>`，`cut` 只留 bot id）：
+
+```bash
+docker exec newbot_pg1_container printenv BOT_TOKEN | cut -d: -f1
+```
+
+> 注意：`--env-file` 是启动时读的，`docker restart` 不会重新读 `.env`，必须重建容器（上面两条命令都会重建）。
+
+---
+
+## 以下为历史记录（早期那一版：`/opt/ledgerbot` + `ledgerbot_container`）
+
+> 部署日期：2026-09-10
+> 结果：当时新容器 `ledgerbot_container` 成功运行，与 `newbot_pg1_container` 并行互不影响。
+> 现在线上以 `~/newbot_pg1` 为准，本节留作参考（同一台服务器，命令里的目录/容器名都已过期）。
 
 ---
 

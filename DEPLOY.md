@@ -40,6 +40,21 @@ git checkout -f -B main origin/main        # 强切到本仓库的 main
 bash deploy/update.sh                      # 用新代码重建容器
 ```
 
+### 账单明细网页（端口怎么接）
+
+网页跑在 bot 进程里（`webconsole.py`），容器内监听 `WEB_CONSOLE_PORT`（默认 8787）。注意**容器里的 8787 和宿主机的 8787 是两回事**：
+
+```
+Cloudflare 子域名 --回源--> 宿主机 8989 --docker -p--> 容器 8787
+```
+
+- 宿主机 **8787 已被 `ledgerbot_container`（早期那套 `/opt/ledgerbot`）占用**，所以本项目对外用 **8989**（`.env` 里 `WEB_CONSOLE_HOST_PORT=8989`）。
+- `.env` 需要这些一起设才通：`WEB_CONSOLE_SECRET`（不设 → 网页不启动、按钮也不显示）、`WEB_CONSOLE_BIND=0.0.0.0`（绑 127.0.0.1 容器外连不上）、`WEB_CONSOLE_PORT=8787`、`WEB_CONSOLE_HOST_PORT=8989`、`WEB_CONSOLE_BASE_URL=https://子域名`。
+- `bash deploy/update.sh` 会自动按 `WEB_CONSOLE_HOST_PORT` 映射端口，不用每次带参数（临时改：`PORT=9010 bash deploy/update.sh`）；端口被别的容器占用时脚本会在删旧容器**之前**报错退出，不会把 bot 弄掉线。
+- 排查两条：`docker ps --filter publish=8989`（端口是谁的）、`docker logs --tail 25 newbot_pg1_container | grep 网页控制台`（网页起没起）。
+- 日志里 `⚠️ 账单明细网页没启用` = `.env` 没设 `WEB_CONSOLE_SECRET`；`⚠️ 镜像里没有 webconsole.py` = 部署的不是本仓库的代码。
+- 改完 `.env` 必须重建容器（`restart` 不会重新读 `.env`），然后**重新发一次「账单」**，旧卡片不会补按钮。
+
 ### 换 Token（改 `.env` 才生效）
 
 token 是容器启动时用 `--env-file .env` 注入的，所以**光 `git pull` 换不掉**，必须连 `.env` 一起改：

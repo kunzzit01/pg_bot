@@ -4,7 +4,8 @@
 #
 #  用法：bash deploy/update.sh
 #       换 token：BOT_TOKEN=<BotFather 给的新token> bash deploy/update.sh
-#       开网页：PORT=<宿主机端口> bash deploy/update.sh
+#       开网页：.env 里写 WEB_CONSOLE_HOST_PORT=<宿主机端口>（Cloudflare 回源到哪个端口）
+#               临时改也可以用 PORT=<宿主机端口> bash deploy/update.sh
 #               （容器里网页监听 WEB_CONSOLE_PORT，默认 8787，本脚本自动读 .env）
 #
 #  它做的事：git pull -> docker build -> 删旧容器 -> 用同样的参数重新 docker run
@@ -55,6 +56,11 @@ if [ -n "${BOT_TOKEN:-}" ]; then
   echo "    已更新 .env 里的 BOT_TOKEN（bot id ${BOT_TOKEN%%:*}），旧 token 随之作废"
 fi
 
+# 对外(宿主机)端口：命令行 PORT= 优先，其次 .env 里的 WEB_CONSOLE_HOST_PORT，都没有就不映射
+if [ -z "${PORT}" ]; then
+  PORT="$(grep -E '^WEB_CONSOLE_HOST_PORT=' .env 2>/dev/null | tail -1 | cut -d= -f2 | tr -d '[:space:]' || true)"
+fi
+
 # 容器里网页监听哪个端口：跟 .env 的 WEB_CONSOLE_PORT 保持一致（默认 8787）
 CONSOLE_PORT="$(grep -E '^WEB_CONSOLE_PORT=' .env 2>/dev/null | tail -1 | cut -d= -f2 | tr -d '[:space:]')"
 CONSOLE_PORT="${CONSOLE_PORT:-8787}"
@@ -64,8 +70,8 @@ if [ -n "${PORT}" ]; then
   taken="$(docker ps --filter "publish=${PORT}" --format '{{.Names}}' | grep -vx "${CONTAINER}" || true)"
   if [ -n "${taken}" ]; then
     echo "!!  宿主机端口 ${PORT} 已经被别的容器占用：$(echo "${taken}" | tr '\n' ' ')" >&2
-    echo "    换一个对外端口重跑，例如： PORT=8788 bash deploy/update.sh" >&2
-    echo "    （记得把 .env 里的 WEB_CONSOLE_BASE_URL 改成同一个端口的地址，按钮才指得对）" >&2
+    echo "    换一个对外端口重跑，例如： PORT=8989 bash deploy/update.sh" >&2
+    echo "    （记得把 .env 里的 WEB_CONSOLE_HOST_PORT 和 WEB_CONSOLE_BASE_URL 一起改）" >&2
     exit 1
   fi
 fi

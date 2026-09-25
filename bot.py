@@ -45,6 +45,8 @@ logger = logging.getLogger("ledgerbot")
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("telegram").setLevel(logging.WARNING)
 logging.getLogger("apscheduler").setLevel(logging.INFO)
+# 每 5 秒一条 "Running job / executed successfully" 会把 docker logs 刷满、把自己的日志挤没，降噪
+logging.getLogger("apscheduler.executors.default").setLevel(logging.WARNING)
 
 try:
     TOKEN = os.environ["BOT_TOKEN"]
@@ -232,6 +234,31 @@ def is_operator(user) -> bool:
     if user.username and user.username.lower() in [u.lower() for u in data["usernames"]]:
         return True
     return False
+
+_RE_VALID_BUTTON_URL = re.compile(r"^https?://[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+$")
+_BAD_URL_WARNED = set()
+
+
+def is_valid_button_url(url: str) -> bool:
+    """Telegram 的按钮只收合法 ASCII http(s) 网址。
+
+    填了占位符（比如 https://你的子域名）这类非法值时，整条消息都会被 Telegram 拒收，
+    表现为「发了指令毫无反应」。这里先挡掉：按钮不显示，但卡片照常发出去。
+    """
+    return bool(url) and bool(_RE_VALID_BUTTON_URL.match(url))
+
+
+def warn_bad_button_url(where: str, url: str) -> None:
+    """非法按钮网址只提醒一次，避免每条账单消息都刷一行日志。"""
+    if url in _BAD_URL_WARNED:
+        return
+    _BAD_URL_WARNED.add(url)
+    logger.warning(
+        "⚠️ %s 不是合法网址（%r）：含中文/空格或没以 http:// 开头都会让「📋 账单明细」按钮打不开，"
+        "现在改成不显示按钮（卡片本身照常发）。请填真实域名（https://你的域名）或 http://公网IP:端口",
+        where, url,
+    )
+
 
 def load_my_address():
     return load_json(MY_ADDRESS_FILE, {}).get("address")
@@ -1417,6 +1444,9 @@ def build_console_link(chat_id, user):
     base = os.environ.get("WEB_CONSOLE_BASE_URL", "").strip()
     if not base:
         base = webconsole.detect_base_url(int(os.environ.get("WEB_CONSOLE_PORT", "8787")))
+    if not is_valid_button_url(base):
+        warn_bad_button_url("WEB_CONSOLE_BASE_URL", base)
+        return None
     username = user.username or ""
     return webconsole.build_link(secret, base, user.id, chat_id, username)
 
@@ -1430,6 +1460,9 @@ def build_ledger_detail_keyboard(chat_id, user=None):
         sep = "&" if "?" in LEDGER_DETAIL_BASE_URL else "?"
         url = f"{LEDGER_DETAIL_BASE_URL}{sep}chat_id={chat_id}"
     if not url:
+        return None
+    if not is_valid_button_url(url):
+        warn_bad_button_url("LEDGER_DETAIL_BASE_URL", url)
         return None
     return InlineKeyboardMarkup([[InlineKeyboardButton("📋 账单明细", url=url)]])
 
@@ -2663,10 +2696,15 @@ async def bcg_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def error_handler(update, context: ContextTypes.DEFAULT_TYPE):
     """所有未捕获的异常都会进来：写日志；私聊/按钮场景下给操作的人一个明确提示（群里不吭声，避免刷屏）。"""
     err = context.error
-    if isinstance(err, NetworkError):
+    # 注意：PTB 里 BadRequest 是 NetworkError 的子类，必须先判它，
+    # 否则「按钮网址非法 / 没有发言权限 / 消息太长」这类真错误会被当成网络抖动静默丢掉。
+    if isinstance(err, BadRequest):
+        logger.error("Telegram 拒绝了这次操作（多为配置或权限问题）：%s", err)
+    elif isinstance(err, NetworkError):
         logger.warning("网络波动（已忽略）：%s", err)
         return
-    logger.error("处理更新时出错", exc_info=err)
+    else:
+        logger.error("处理更新时出错", exc_info=err)
     try:
         if isinstance(update, Update):
             if update.callback_query:
@@ -3351,6 +3389,9 @@ def start_web_console():
             "（容器里还要 WEB_CONSOLE_BIND=0.0.0.0 + WEB_CONSOLE_PORT，并把端口映射出来），再重建容器"
         )
         return
+    base_env = os.environ.get("WEB_CONSOLE_BASE_URL", "").strip()
+    if base_env and not is_valid_button_url(base_env):
+        warn_bad_button_url("WEB_CONSOLE_BASE_URL", base_env)
     try:
         httpd = webconsole.start(secret, {
             "authorized": _console_authorized,

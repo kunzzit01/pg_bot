@@ -1,6 +1,7 @@
 import ast
 import asyncio
 import functools
+import hashlib
 import html
 import json
 import logging
@@ -190,14 +191,15 @@ def load_json(path, default):
     try:
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
-    except (json.JSONDecodeError, UnicodeDecodeError):
-        # 文件损坏：备份后按空数据处理，避免整个 Bot 因为一个坏文件全部报错
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError) as e:
+        # 文件损坏 / 被建成目录 / 权限不对：备份后按空数据处理，避免整个 Bot 因为一个坏文件全部报错。
+        # OSError 以前没兜住，会直接抛给调用方，把用到这个文件的指令整个弄坏。
         backup = f"{path}.corrupt-{datetime.now().strftime('%Y%m%d%H%M%S')}"
         try:
             os.replace(path, backup)
         except OSError:
             pass
-        logger.critical("❌ 数据文件损坏：%s 已备份为 %s，本次按空数据处理，请人工检查", path, backup)
+        logger.critical("❌ 数据文件读不出来：%s（%s）已备份为 %s，本次按空数据处理，请人工检查", path, e, backup)
         return default
 
 
@@ -216,8 +218,51 @@ def is_admin(user) -> bool:
     return user.username.lower() in {u.lower() for u in ADMIN_USERNAMES}
 
 
+# Telegram 用户名规则：@ 后面那段必须是字母开头、5-32 位，且只能字母/数字/下划线
+_RE_TG_USERNAME = re.compile(r"^[A-Za-z][A-Za-z0-9_]{4,31}$")
+_DROPPED_WARNED = set()
+
+
+def _warn_dropped_operator(raw):
+    """名单里混进不合法条目时提醒一次（同一个值只提醒一次，避免每条指令都刷日志）。"""
+    if raw in _DROPPED_WARNED:
+        return
+    _DROPPED_WARNED.add(raw)
+    logger.warning(
+        "⚠️ 操作员名单里有一条不合法，已忽略（不会再让整个列表打不开）：%r —— 合法写法是"
+        "「@用户名」（字母开头、5-32 位、只能字母数字下划线）或纯数字用户ID，多个名字要分开发。文件：%s",
+        raw, OPERATORS_FILE,
+    )
+
+
+def _normalize_operators(raw):
+    """把名单洗成固定结构：非 dict 当空名单、缺键补空、丢掉不合法条目。
+
+    以前这里直接把文件内容当 {"ids": [...], "usernames": [...]} 用，两种写法都能把
+    /listoperators 和 /addoperator 彻底弄坏、只能上服务器改文件：
+      - 文件被手工改成 {} 或数组 → KeyError / TypeError；
+      - 某条「用户名」粘进了几十个字 → 按钮 callback_data 超过 Telegram 的 64 字节上限，
+        整条消息被拒收（Button_data_invalid）。
+    这里全部兜住：坏条目丢掉并提醒，其余功能照常。"""
+    if not isinstance(raw, dict):
+        return {"ids": [], "usernames": []}
+    ids, usernames = [], []
+    for i in raw.get("ids") or []:
+        if isinstance(i, int) and not isinstance(i, bool) and 0 < i < 10 ** 13 and i not in ids:
+            ids.append(i)
+        else:
+            _warn_dropped_operator(i)
+    for u in raw.get("usernames") or []:
+        s = str(u).strip().lstrip("@")
+        if _RE_TG_USERNAME.match(s) and s not in usernames:
+            usernames.append(s)
+        else:
+            _warn_dropped_operator(u)
+    return {"ids": ids, "usernames": usernames}
+
+
 def load_operators():
-    return load_json(OPERATORS_FILE, {"ids": [], "usernames": []})
+    return _normalize_operators(load_json(OPERATORS_FILE, {"ids": [], "usernames": []}))
 
 
 def save_operators(data):
@@ -275,11 +320,30 @@ def total_pages(count):
     return max(1, -(-count // PAGE_SIZE))
 
 
-def get_operators_list():
-    data = load_operators()
+def _operators_items(data):
     items = [("id", str(i), f"🆔 {i}") for i in data["ids"]]
     items += [("un", u, f"👤 @{u}") for u in data["usernames"]]
     return items
+
+
+def get_operators_list():
+    return _operators_items(load_operators())
+
+
+def _op_key(kind, val) -> str:
+    """按钮里只放这个短哈希，不放用户名/ID 原文。
+
+    Telegram 的 callback_data 上限是 64 字节，用户名多长却说不准：把原文塞进去，
+    只要有一条长一点（比如一次粘了 5 个名字），整条消息就会被拒收（Button_data_invalid）。"""
+    return hashlib.sha1(f"{kind}:{val}".encode("utf-8")).hexdigest()[:10]
+
+
+def _find_operator(key):
+    """按短哈希找回条目，返回 (序号, kind, val, label)；返回 None 说明列表已经变了。"""
+    for idx, (kind, val, label) in enumerate(get_operators_list()):
+        if _op_key(kind, val) == key:
+            return idx, kind, val, label
+    return None
 
 
 def build_operators_page(page, items=None):
@@ -297,7 +361,8 @@ def build_operators_page(page, items=None):
         lines = ["📋 操作员（共 0 位）", "", "（暂无操作员，点下方添加）"]
     text = "\n".join(lines)
 
-    buttons = [[InlineKeyboardButton(label, callback_data=f"op:rm:{kind}:{val}")] for kind, val, label in page_items]
+    # 按钮只带短哈希 + 页码（十几个字节，用户名再长也不会撑爆 callback_data 的 64 字节上限）
+    buttons = [[InlineKeyboardButton(label, callback_data=f"op:rm:{_op_key(kind, val)}:{page}")] for kind, val, label in page_items]
 
     nav = []
     if page > 1:
@@ -336,15 +401,16 @@ async def listoperators_noop_cb(update: Update, context: ContextTypes.DEFAULT_TY
 async def listoperators_rm_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    _, _, kind, val = query.data.split(":", 3)
-    items = get_operators_list()
-    idx = next((i for i, (k, v, _) in enumerate(items) if k == kind and v == val), 0)
-    page = idx // PAGE_SIZE + 1
-    label = next((l for k, v, l in items if k == kind and v == val), val)
+    _, _, key, page = query.data.split(":", 3)
+    found = _find_operator(key)
+    if found is None:
+        await query.edit_message_text("这个操作员已经不在名单里了（列表变了），请重新发 /listoperators")
+        return
+    _, _, _, label = found
 
     text = f"确定要移除操作员 {label} 吗？"
     buttons = [
-        [InlineKeyboardButton("✅ 确认移除", callback_data=f"op:rmconfirm:{kind}:{val}:{page}")],
+        [InlineKeyboardButton("✅ 确认移除", callback_data=f"op:rmok:{key}:{page}")],
         [InlineKeyboardButton("❌ 取消", callback_data=f"op:cancel:{page}")],
     ]
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons))
@@ -353,7 +419,14 @@ async def listoperators_rm_cb(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def listoperators_rmconfirm_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    _, _, kind, val, page = query.data.split(":", 4)
+    _, _, key, page = query.data.split(":", 3)
+    found = _find_operator(key)
+    if found is None:
+        # 按哈希找人：名单在这条消息发出去之后变过（比如又在别处加了人），就别误删别人
+        text, kb, _ = build_operators_page(int(page))
+        await query.edit_message_text(f"没删任何人：这位已经不在名单里了\n\n{text}", reply_markup=kb)
+        return
+    _, kind, val, label = found
     data = load_operators()
     if kind == "id":
         data["ids"] = [i for i in data["ids"] if str(i) != val]
@@ -361,7 +434,7 @@ async def listoperators_rmconfirm_cb(update: Update, context: ContextTypes.DEFAU
         data["usernames"] = [u for u in data["usernames"] if u.lower() != val.lower()]
     save_operators(data)
     text, kb, _ = build_operators_page(int(page))
-    await query.edit_message_text(f"✅ 已移除\n\n{text}", reply_markup=kb)
+    await query.edit_message_text(f"✅ 已移除 {label}\n\n{text}", reply_markup=kb)
 
 
 async def listoperators_cancel_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -398,23 +471,51 @@ async def cancel_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 async def addoperator_receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    target = update.message.text.strip()
+    # 一次可以粘多个名字：按空格拆开逐个认（「@用户名」或纯数字用户ID）。
+    # 以前是整条文本原样存成一个用户名 —— 一次粘 5 个名字，列表页就再也打不开了
+    # （callback_data 超 64 字节，Telegram 直接拒收，连删都删不掉，只能上服务器改文件）。
+    tokens = [t for t in (update.message.text or "").split() if t]
     data = load_operators()
-    if target.startswith("@"):
-        uname = target[1:]
-        if uname not in data["usernames"]:
-            data["usernames"].append(uname)
-    else:
+    added, bad = [], []
+    for t in tokens:
+        s = t.strip().lstrip("@")
+        if _RE_TG_USERNAME.match(s):
+            if s not in data["usernames"]:
+                data["usernames"].append(s)
+            added.append(f"@{s}")
+            continue
         try:
-            uid = int(target)
+            uid = int(t)
         except ValueError:
-            await update.message.reply_text("格式不对，用户ID必须是纯数字，或者用 @username，请重新输入：")
-            return ADDOP_WAIT
-        if uid not in data["ids"]:
-            data["ids"].append(uid)
+            bad.append(t)
+            continue
+        if 0 < uid < 10 ** 13:
+            if uid not in data["ids"]:
+                data["ids"].append(uid)
+            added.append(str(uid))
+        else:
+            bad.append(t)
+
+    if not added:
+        await update.message.reply_text(
+            "格式不对，用户ID必须是纯数字，或者用 @username，请重新输入：\n"
+            "（一次发一个就行，多个名字也别粘成一条）"
+        )
+        return ADDOP_WAIT
+
+    # 先渲染、再落盘：渲染万一失败，名单里也不会留下坏条目
+    items = _operators_items(data)
+    text, kb, _ = build_operators_page(1, items)
     save_operators(data)
-    text, kb, _ = build_operators_page(1)
-    await update.message.reply_text(f"✅ 已授权操作员：{target}\n\n{text}", reply_markup=kb)
+
+    got = "、".join(added)
+    tail = f"\n⚠️ 这几条看不懂，没加：{'、'.join(bad)}" if bad else ""
+    try:
+        await update.message.reply_text(f"✅ 已授权操作员：{got}{tail}\n\n{text}", reply_markup=kb)
+    except Exception as e:
+        # 人已经存上了，别让「出错了」把这句话盖住（以前出错的提示和实际结果正好相反）
+        logger.exception("操作员已保存，但列表页没发出去")
+        await update.message.reply_text(f"✅ 已授权操作员：{got}（列表页没发出去：{e}，发 /listoperators 查看）")
     return ConversationHandler.END
 
 
@@ -3488,8 +3589,8 @@ app.add_handler(CommandHandler("removeoperator", removeoperator_alias))
 app.add_handler(CommandHandler("listoperators", listoperators_cmd))
 app.add_handler(addoperator_conv)
 app.add_handler(CallbackQueryHandler(listoperators_page_cb, pattern=r"^op:page:\d+$"))
-app.add_handler(CallbackQueryHandler(listoperators_rmconfirm_cb, pattern=r"^op:rmconfirm:"))
-app.add_handler(CallbackQueryHandler(listoperators_rm_cb, pattern=r"^op:rm:(id|un):"))
+app.add_handler(CallbackQueryHandler(listoperators_rmconfirm_cb, pattern=r"^op:rmok:[0-9a-f]{10}:\d+$"))
+app.add_handler(CallbackQueryHandler(listoperators_rm_cb, pattern=r"^op:rm:[0-9a-f]{10}:\d+$"))
 app.add_handler(CallbackQueryHandler(listoperators_cancel_cb, pattern=r"^op:cancel:\d+$"))
 app.add_handler(CallbackQueryHandler(listoperators_close_cb, pattern=r"^op:close$"))
 app.add_handler(CallbackQueryHandler(listoperators_noop_cb, pattern=r"^op:noop$"))

@@ -45,11 +45,15 @@ bash deploy/update.sh                      # 用新代码重建容器
 网页跑在 bot 进程里（`webconsole.py`），容器内监听 `WEB_CONSOLE_PORT`（默认 8787）。注意**容器里的 8787 和宿主机的 8787 是两回事**：
 
 ```
-Cloudflare 子域名 --回源--> 宿主机 8989 --docker -p--> 容器 8787
+Cloudflare Origin Rules：pg.count168.site --重写端口--> 宿主机 8989 --docker -p--> 容器 8787
 ```
 
-- 宿主机 **8787 已被 `ledgerbot_container`（早期那套 `/opt/ledgerbot`）占用**，所以本项目对外用 **8989**（`.env` 里 `WEB_CONSOLE_HOST_PORT=8989`）。
-- `.env` 需要这些一起设才通：`WEB_CONSOLE_SECRET`（不设 → 网页不启动、按钮也不显示）、`WEB_CONSOLE_BIND=0.0.0.0`（绑 127.0.0.1 容器外连不上）、`WEB_CONSOLE_PORT=8787`、`WEB_CONSOLE_HOST_PORT=8989`、`WEB_CONSOLE_BASE_URL=https://子域名`。
+- Cloudflare 里 `pg.count168.site` 上有**两条** Origin Rule（`pg-8787` → 8787、`pg-8989` → 8989）。CF 的规则是"同一种修改、**最后执行的那条赢**"，所以现在实际生效的是 **8989**：这个域名指向的是本项目，旧的 `ledgerbot_container`（8787）通过它已经打不开了（旧的那套要留就给它单独一个子域名）。
+- 对应地 `.env` 里 `WEB_CONSOLE_BASE_URL=https://pg.count168.site`（**不带端口**，端口由 CF 重写）。
+- 域名打不开时依次查：Hostinger 面板 Firewall 是否放行 TCP **8989** → CF 的 SSL 模式（源站 8989 是明文 HTTP，得是 Flexible/或配好源站证书）→ `curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8989/` 在 VPS 上是否 200。
+
+- 宿主机 **8787 已被 `ledgerbot_container`（早期那套 `/opt/ledgerbot`）占用**，所以本项目对外用 **8989**。
+- `.env` 需要这些一起设才通：`WEB_CONSOLE_SECRET`（不设 → 网页不启动、按钮也不显示）、`WEB_CONSOLE_BIND=0.0.0.0`（绑 127.0.0.1 容器外连不上）、`WEB_CONSOLE_PORT=8787`、`WEB_CONSOLE_HOST_PORT=8989`、`WEB_CONSOLE_BASE_URL=https://pg.count168.site`。
 - `bash deploy/update.sh` 会自动按 `WEB_CONSOLE_HOST_PORT` 映射端口，不用每次带参数（临时改：`PORT=9010 bash deploy/update.sh`）；端口被别的容器占用时脚本会在删旧容器**之前**报错退出，不会把 bot 弄掉线。
 - 排查两条：`docker ps --filter publish=8989`（端口是谁的）、`docker logs --tail 25 newbot_pg1_container | grep 网页控制台`（网页起没起）。
 - 日志里 `⚠️ 账单明细网页没启用` = `.env` 没设 `WEB_CONSOLE_SECRET`；`⚠️ 镜像里没有 webconsole.py` = 部署的不是本仓库的代码。

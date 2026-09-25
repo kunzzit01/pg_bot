@@ -2888,11 +2888,33 @@ async def try_handle_calculator(update: Update, context: ContextTypes.DEFAULT_TY
 
 # ---------- 回调 ----------
 
+_RE_CMD_LOOKALIKE = re.compile(
+    r"^[+-]\s*\d|账单|下发|日切|清空|撤销|设置|设定|修改|本月总账|全局账单|群发|^[（(]?\d+[\s\d+\-*/().]*$"
+)
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if user is None:
         return
     if not is_operator(user):
+        # 不静默：非操作员发「像指令」的消息时，日志里留痕 + 私聊里给一句说明。
+        # 否则「发了 +100 毫无反应」会被当成功能坏了（名字对不上、data 目录不对都会这样）。
+        raw = (update.message.text or "").strip()
+        # 跟下面的真正处理保持一致：全角 ＋１００、（１＋２） 也要算「像指令」
+        if _RE_CMD_LOOKALIKE.search(normalize(raw)):
+            chat = update.effective_chat
+            logger.info(
+                "👤 忽略非操作员的指令：%s（id=%s username=%s）在 chat %s 发「%s」"
+                "（要放行：管理员发 /addoperator，或把 username 加进 bot.py 的 ADMIN_USERNAMES）",
+                user.full_name or user.id, user.id, user.username or "-",
+                chat.id if chat else "-", raw[:40],
+            )
+            if chat is not None and chat.type == "private":
+                await update.message.reply_text(
+                    "这个账号还不在操作员名单里，所以记账、查账这些指令不会有反应。\n"
+                    "让管理员在群里发 /addoperator，把你的用户名或用户ID加进去即可。"
+                )
         return
 
     chat = update.effective_chat
@@ -3451,6 +3473,18 @@ else:
         "请确认镜像里装的是 python-telegram-bot[job-queue]（而不是不带 extras 的版本），"
         "并且 APScheduler 已正确安装。"
     )
+
+# 启动自检：数据目录 + 操作员名单 + 账本规模
+# 换了机器 / 卷没挂上 / 数据目录写错，都会表现为「操作员全没了、账本空了、指令没反应」，这里一眼能看出来
+try:
+    _ops = load_operators()
+    _ledger = load_ledger_entries() or {}
+    logger.info(
+        "📂 数据目录：%s｜操作员名单：%d 个 id + %d 个 username｜账本会话数：%d",
+        _data_dir, len(_ops.get("ids") or []), len(_ops.get("usernames") or []), len(_ledger),
+    )
+except Exception:
+    logger.exception("启动自检失败（不影响 Bot 运行）")
 
 logger.info("记账机器人已启动，正在监听消息...")
 app.run_polling(drop_pending_updates=True)

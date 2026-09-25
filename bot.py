@@ -54,7 +54,7 @@ except KeyError:
     logger.critical("❌ 未找到环境变量 BOT_TOKEN，Bot 无法启动。请检查 .env / docker run --env-file 是否正确传入。")
     raise
 
-ADMIN_USERNAMES = {"IgAccJohn", "Safepaymark", "MrK6776", "react249", "jiang9546", "bestmario999", "Ninety13"}
+ADMIN_USERNAMES = {"IgAccJohn", "Safepaymark", "MrK6776", "react249", "jiang9546", "bestmario999", "Ninety13", "SafePayBowser"}
 
 # 「账单明细」按钮跳转的网页地址（带上 chat_id 参数，跳到各群自己的页面）。
 # 例如设置 LEDGER_DETAIL_BASE_URL=https://your-domain.com/ledger ，

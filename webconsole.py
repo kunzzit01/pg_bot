@@ -517,7 +517,11 @@ PAGE_HTML = r"""<!DOCTYPE html>
   .date-btn:active{transform:translateY(1px)}
   .date-btn:disabled{opacity:.5;cursor:default}
   .date-btn .ico{flex:0 0 auto;font-size:14px}
-  .date-btn .txt{flex:1 1 auto;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  /* 一行放不下时换行，时间整段落到第二排（不再截断成「2026-09-15 00:00 至 2026-…」） */
+  .date-btn .txt{flex:1 1 auto;min-width:0;white-space:normal;line-height:1.35}
+  .date-btn .txt .seg{display:inline-block;white-space:nowrap}
+  .date-btn .txt .sep{white-space:nowrap}
+  .date-btn .txt .tm{color:var(--muted);font-weight:600}
   .date-btn .caret{flex:0 0 auto;color:var(--muted);font-size:12px}
   /* 清除日期：独立按钮（此前是 span 套在按钮里，读屏识别不到且只有 15×19） */
   .clr-btn{flex:0 0 auto;width:48px;height:48px;border:1px solid var(--line);background:var(--chip);
@@ -593,7 +597,8 @@ PAGE_HTML = r"""<!DOCTYPE html>
   .tw{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:0 -12px -4px}
   /* 轻表格（设计稿）：表头一条底色 + 每行下方一条细线 + 列与列之间的竖线；
      没有表格外框，也没有把每个单元格都框起来（那是上一版被撤掉的「Excel 满格线」） */
-  table{width:100%;border-collapse:collapse;font-size:13.5px;table-layout:fixed}
+  /* 窄屏时表格不再挤压截断：给个最小宽度，超出交给外层 .tw 横向滚动 */
+  table{width:100%;min-width:520px;border-collapse:collapse;font-size:13.5px;table-layout:fixed}
   /* 三张表共用同一套列宽：时间一列 + 其余四等分 —— 所以入账 / 下发 / 分组的列左右对齐，
      某一格内容再长也只在自己那一列里收（截断），不会把其它列挤歪 */
   th:nth-child(1){width:22%}
@@ -642,14 +647,21 @@ PAGE_HTML = r"""<!DOCTYPE html>
   .q-list button .nm{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .q-list button .cnt{flex:0 0 auto;font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
   .q-list .none{padding:12px 10px;font-size:13px;color:var(--muted)}
-  .chips{display:flex;gap:6px;overflow-x:auto;margin-top:10px;padding-bottom:1px;scrollbar-width:none}
+  /* 搜索范围 chips：浅底药丸，选中的填焦糖色并带一点浮起感；悬停/按下都有反馈 */
+  .chips{display:flex;gap:7px;overflow-x:auto;margin-top:11px;padding:1px 0 2px;scrollbar-width:none}
   .chips::-webkit-scrollbar{display:none}
-  .chips button{flex:0 0 auto;border:1px solid var(--card-border);background:var(--card);color:var(--muted);
-                border-radius:99px;font:inherit;font-size:12.5px;padding:8px 13px;min-height:36px;
-                cursor:pointer;white-space:nowrap}
-  .chips button.on{background:var(--brand);border-color:transparent;color:#fff;font-weight:700}
-  html[data-theme="dark"] .chips button.on{background:rgba(56,189,248,.16);color:var(--brand);
-                                           border-color:rgba(56,189,248,.34)}
+  .chips button{flex:0 0 auto;border:1px solid transparent;background:var(--chip);color:var(--ink);
+                border-radius:999px;font:inherit;font-size:12.5px;font-weight:650;letter-spacing:.01em;
+                padding:9px 15px;min-height:38px;cursor:pointer;white-space:nowrap;
+                transition:background .15s,color .15s,box-shadow .15s,transform .12s}
+  .chips button:hover{background:var(--brand-bg);color:var(--brand)}
+  .chips button:active{transform:scale(.96)}
+  .chips button.on{background:var(--brand);color:#fff;box-shadow:0 3px 10px -4px rgba(159,88,48,.75)}
+  .chips button.on:hover{background:var(--brand);color:#fff}
+  html[data-theme="dark"] .chips button{background:var(--chip);color:var(--ink)}
+  html[data-theme="dark"] .chips button:hover{background:rgba(56,189,248,.14);color:var(--brand)}
+  html[data-theme="dark"] .chips button.on{background:rgba(56,189,248,.18);color:var(--brand);
+                                           box-shadow:0 0 0 1px rgba(56,189,248,.42) inset}
 
   /* 面板里的「开始/结束时刻」：整块可点，点开自绘的时刻面板（24 小时制） */
   .pk-times{display:flex;gap:10px;margin-top:10px}
@@ -1074,14 +1086,20 @@ PAGE_HTML = r"""<!DOCTYPE html>
     };
   }
   function renderRange() {
-    var txt, sep = "  " + t("to") + "  ";
-    var s = R.startDate ? (R.startDate + " " + R.startTime) : "";
-    var e = R.endDate ? (R.endDate + " " + R.endTime) : "";
-    if (s && e) txt = s + sep + e;
-    else if (s) txt = s + (LANG === "zh" ? " 起" : " →");
-    else if (e) txt = (LANG === "zh" ? "至 " : "→ ") + e;
-    else txt = t("pickDate");
-    $("dateText").textContent = txt;
+    // 日期与时间分段渲染：日期一段、时间一段，行内放不下时整段折到下一排
+    var to = " " + t("to") + " ";
+    var seg = function (txt, cls) {
+      return '<span class="seg' + (cls ? " " + cls : "") + '">' + esc(txt) + "</span>";
+    };
+    var html = "", d1 = "", d2 = "", t1 = "", t2 = "";
+    if (R.startDate) { d1 = R.startDate; t1 = R.startTime; }
+    if (R.endDate) { d2 = R.endDate; t2 = R.endTime; }
+    if (d1 && d2) html = seg(d1) + '<span class="sep">' + esc(to) + "</span>" + seg(d2) +
+                        ' <span class="seg tm">' + esc(t1 + to + t2) + "</span>";
+    else if (d1) html = seg(d1) + ' <span class="seg tm">' + esc(t1 + (LANG === "zh" ? " 起" : " →")) + "</span>";
+    else if (d2) html = seg((LANG === "zh" ? "至 " : "→ ") + d2) +
+                        ' <span class="seg tm">' + esc((LANG === "zh" ? "至 " : "→ ") + t2) + "</span>";
+    $("dateText").innerHTML = html || esc(t("pickDate"));
     $("clrDate").hidden = !(R.startDate || R.endDate);
   }
   function renderCal() {
@@ -1825,9 +1843,12 @@ PAGE_HTML = r"""<!DOCTYPE html>
     var b = e.target.closest("button[data-scope]");
     if (!b) return;
     // 再点一次已选中的 chip = 取消该范围，回到「所有列一起搜」（此时没有 chip 高亮）
-    Q.scope = (Q.scope === b.dataset.scope) ? "all" : b.dataset.scope;
+    var wasOn = (Q.scope === b.dataset.scope);
+    Q.scope = wasOn ? "all" : b.dataset.scope;
     renderQ();
-    // 只切范围，不自动展开候选列表：选好范围后再点输入框才展开（老板定的流程）
+    // 选中某个范围＝顺势把候选下拉展开（一步到位，不用再点搜索框）；
+    // 取消范围＝只收起下拉，别再自动弹出来。不聚焦输入框，避免手机上先弹键盘。
+    if (wasOn) { closeQList(); } else { openQList(); }
     if (Q.text) renderTables();
   });
   $("dateBtn").addEventListener("click", openPicker);

@@ -3012,6 +3012,11 @@ def save_ocr_bills(data):
     save_json(OCR_BILLS_FILE, data)
 
 
+# 「OCR 截图查重」总开关：默认关闭（功能还没对外，用户不该看到任何提示）。
+# 关掉时连图片 handler 都不注册 —— 图片不会被下载、不会 OCR、不会入库、也不会回帖。
+# 要重新开放：.env 里设 OCR_SCAN_ENABLED=1，再 bash deploy/update.sh 重建容器。
+OCR_SCAN_ENABLED = os.environ.get("OCR_SCAN_ENABLED", "").strip().lower() in ("1", "true", "yes", "y", "on")
+
 _OCR_LOCK = asyncio.Lock()       # OCR 推理串行：防并发时内存叠加
 _OCR_MAX_RECORDS = 3000          # 查重库上限，超出丢最旧记录
 _OCR_ALERT_COOLDOWN = 30         # 同一指纹 30 秒内只报一次警，防连环重发刷屏
@@ -3136,7 +3141,7 @@ async def _ocr_process_photo(update, context, file_id, file_unique_id, chat):
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Bot 所在所有群的图片全局监管：无操作员门槛，后台静默处理。"""
-    if ocr_bill is None:
+    if not OCR_SCAN_ENABLED or ocr_bill is None:
         return
     msg = update.message
     if msg.photo:
@@ -3502,8 +3507,10 @@ app.add_handler(MessageHandler(filters.ALL, track_known_group), group=1)
 app.add_error_handler(error_handler)
 
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-# OCR 截图查重监管：Bot 所在所有群的照片/图片文件全局静默监控
-app.add_handler(MessageHandler(filters.PHOTO | filters.Document.IMAGE, handle_photo))
+# OCR 截图查重监管（默认关闭，见 OCR_SCAN_ENABLED）：
+# 只有开关打开时才注册图片 handler，关掉后 Bot 所在群的图片一律不处理、不回复
+if OCR_SCAN_ENABLED:
+    app.add_handler(MessageHandler(filters.PHOTO | filters.Document.IMAGE, handle_photo))
 
 if app.job_queue is not None:
     app.job_queue.run_repeating(auto_cut_job, interval=5, first=5)
@@ -3526,6 +3533,11 @@ try:
     )
 except Exception:
     logger.exception("启动自检失败（不影响 Bot 运行）")
+
+if OCR_SCAN_ENABLED:
+    logger.info("🔍 OCR 截图查重：已开启（图片静默入库，仅在发现重复时于群里提示）")
+else:
+    logger.info("🔍 OCR 截图查重：已关闭（对外撤下状态；要开放就设 OCR_SCAN_ENABLED=1 再重建容器）")
 
 logger.info("记账机器人已启动，正在监听消息...")
 app.run_polling(drop_pending_updates=True)

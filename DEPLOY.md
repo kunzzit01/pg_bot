@@ -57,6 +57,7 @@ Cloudflare Origin Rules：pg.count168.site --重写端口--> 宿主机 8989 --do
 - `bash deploy/update.sh` 会自动按 `WEB_CONSOLE_HOST_PORT` 映射端口，不用每次带参数（临时改：`PORT=9010 bash deploy/update.sh`）；端口被别的容器占用时脚本会在删旧容器**之前**报错退出，不会把 bot 弄掉线。
 - 排查两条：`docker ps --filter publish=8989`（端口是谁的）、`docker logs --tail 25 newbot_pg1_container | grep 网页控制台`（网页起没起）。
 - 日志里 `⚠️ 账单明细网页没启用` = `.env` 没设 `WEB_CONSOLE_SECRET`；`⚠️ 镜像里没有 webconsole.py` = 部署的不是本仓库的代码。
+- **OCR 截图查重默认关闭**（`OCR_SCAN_ENABLED` 不设=关闭，功能还没对外）——关闭时图片 handler 根本不注册，群里的图片不会被下载/OCR/入库，也不会回帖提示。要开放：`.env` 里 `OCR_SCAN_ENABLED=1` 后重建容器。
 - 改完 `.env` 必须重建容器（`restart` 不会重新读 `.env`），然后**重新发一次「账单」**，旧卡片不会补按钮。
 
 ### 换 Token（改 `.env` 才生效）

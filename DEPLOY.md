@@ -60,6 +60,22 @@ Cloudflare Origin Rules：pg.count168.site --重写端口--> 宿主机 8989 --do
 - **OCR 截图查重默认关闭**（`OCR_SCAN_ENABLED` 不设=关闭，功能还没对外）——关闭时图片 handler 根本不注册，群里的图片不会被下载/OCR/入库，也不会回帖提示。要开放：`.env` 里 `OCR_SCAN_ENABLED=1` 后重建容器。
 - 改完 `.env` 必须重建容器（`restart` 不会重新读 `.env`），然后**重新发一次「账单」**，旧卡片不会补按钮。
 
+### 回退到上一个版本（秒级）
+
+`deploy/update.sh` 每次构建都会给镜像打两个标签：`:latest` 和 `:<commit短哈希>`。回退就是拿旧标签重建容器——**不重新 build、不动 git、不动 `data/`**，参数（`--env-file` / 数据卷 / 端口映射）跟 update.sh 完全一致，所以不会漏挂卷、漏端口：
+
+```bash
+cd ~/newbot_pg1
+bash deploy/rollback.sh --list      # 先看有哪些版本（▶ = 当前线上跑的那个）
+bash deploy/rollback.sh             # 回退到上一个版本
+bash deploy/rollback.sh 094fd62     # 回退到指定版本
+bash deploy/update.sh               # 回到最新版
+```
+
+- **别用**「`git checkout` 旧提交 + `bash deploy/update.sh`」退版本：update.sh 里有 `git pull`，会立刻把你拉回最新，等于没退。
+- 数据不跟着回退：`data/` 原样不动（账本只前进）。新版本写过的字段旧版本会忽略，一般没问题。
+- 回退到 `1a04066` **之前**的版本要注意：那时还没有 `OCR_SCAN_ENABLED` 开关（OCR 默认开着，虽然镜像里没装 rapidocr 不会真的报警，但别冒险）。
+
 ### 换 Token（改 `.env` 才生效）
 
 token 是容器启动时用 `--env-file .env` 注入的，所以**光 `git pull` 换不掉**，必须连 `.env` 一起改：

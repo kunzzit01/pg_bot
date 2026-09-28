@@ -82,6 +82,13 @@ mkdir -p "${DATA_DIR}"
 echo "==> 3/5 构建镜像 ${IMAGE}"
 docker build -t "${IMAGE}" .
 
+# 同时按 commit 短哈希打一个版本标签：回退时用它秒级重建，不用重新 build
+SHA="$(git rev-parse --short HEAD 2>/dev/null || echo nogit)"
+docker tag "${IMAGE}" "${IMAGE%%:*}:${SHA}"
+VER_SUBJECT="$(git log -1 --format=%s 2>/dev/null || echo -)"
+echo "    版本标签：${IMAGE%%:*}:${SHA}（$(echo "$VER_SUBJECT" | cut -c1-40)）"
+echo "    回退到上一个版本：bash deploy/rollback.sh"
+
 echo "==> 4/5 重建容器 ${CONTAINER}"
 if docker ps -a --format '{{.Names}}' | grep -qx "${CONTAINER}"; then
   docker rm -f "${CONTAINER}" >/dev/null

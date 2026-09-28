@@ -1630,6 +1630,8 @@ def build_ledger_detail_keyboard(chat_id, user=None):
 
 async def try_handle_ledger_entry(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str) -> bool:
     """匹配 +金额 / -金额 记一笔，可带备注；也支持「代号 +金额 备注」这种带分组代号的写法。"""
+    if _is_private_chat(update):
+        return False  # 私聊不记账（引导语由 handle_message 的护栏回）
     tag = None
     m = RE_LEDGER_ENTRY_TAGGED.match(text)
     if m and m.group(1) != "下发":
@@ -1673,6 +1675,8 @@ async def try_handle_ledger_entry(update: Update, context: ContextTypes.DEFAULT_
 
 async def try_handle_ledger_disburse(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str) -> bool:
     """匹配「下发」指令：下发 2000 / 下发 -2000 手续20 备注；也支持带分组代号「KY 下发 2000」。"""
+    if _is_private_chat(update):
+        return False  # 私聊不记账（引导语由 handle_message 的护栏回）
     m = RE_LEDGER_DISBURSE.match(text)
     if not m:
         return False
@@ -2925,6 +2929,9 @@ def find_known_tag_token(text):
 
 async def try_handle_ledger_smart_merge(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str) -> bool:
     """回复客户消息时，代号/金额/备注可以任意分布在客户原文和操作员回复两条消息里，自动拼装成一笔记账。"""
+    if _is_private_chat(update):
+        return False  # 私聊不记账：回复某条消息 + 金额 这种入口也不能漏
+
     if not update.message.reply_to_message:
         return False
 
@@ -3101,6 +3108,17 @@ _RE_PRIVATE_WRITE_EARLY = (
     RE_ADD_GROUP_TAGS, RE_DEL_GROUP_TAGS,
 )
 _RE_PRIVATE_WRITE_ENTRY = (RE_LEDGER_ENTRY, RE_LEDGER_ENTRY_TAGGED, RE_LEDGER_DISBURSE)
+
+
+def _is_private_chat(update) -> bool:
+    """私聊是控台：查看 / 算式 / 群发广播 / 管理员命令照常，但账本写操作一律不做。
+
+    在纯写函数（记账 / 下发 / 回复合并记账）的最前面直接拦住，比只靠 handle_message 里
+    的正则护栏更稳 —— 上游以后调整指令顺序、或新增记账入口，也不会在私聊里漏出来。
+    （设置类 / 日切 / 清空 / 撤销 的写形态由 handle_message 的正则护栏负责，那里还兼着
+    给用户回引导语；它们同名还有查看分支，不能在这里一刀切。）"""
+    chat = getattr(update, "effective_chat", None)
+    return chat is not None and getattr(chat, "type", "") == "private"
 
 
 async def _private_write_blocked(update: Update, text: str, patterns) -> bool:

@@ -3100,8 +3100,11 @@ _RE_CMD_LOOKALIKE = re.compile(
 # ---------- 私聊护栏：私聊只查看，不改账本 ----------
 # 分两批：中间夹着「计算器」——「12 + 34」这种算式和「代号 +100」的记账长得一样，
 # 必须让计算器先处理，不能一上来就被当成记账挡掉。
+# 注意：「清空账单 / 撤销清空账单」**故意不在这里**——私聊要能用（操作员要求）。
+# 它按会话 id 存快照（ledger_clear_snapshot.json 里以 chat_id 为键），
+# 所以在私聊里清空只影响私聊自己的账单，不会碰任何群；而且私聊本来就要求管理员/操作员身份。
 _RE_PRIVATE_WRITE_EARLY = (
-    RE_CLOSE_LEDGER, RE_CLEAR_LEDGER, RE_UNDO_CLEAR_LEDGER, RE_REVOKE, RE_REVOKE_RESTORE, RE_RETRACT,
+    RE_CLOSE_LEDGER, RE_REVOKE, RE_REVOKE_RESTORE, RE_RETRACT,
     RE_SET_CURRENCY, RE_CHANGE_CURRENCY, RE_SET_TIMEZONE, RE_SET_IN_FEE, RE_SET_OUT_FEE, RE_SET_PERIOD_LABEL,
     RE_SET_AUTO_CUT_TIME, RE_CANCEL_AUTO_CUT, RE_RESET_AUTO_CUT,
     RE_HIDE_CURRENCY, RE_SHOW_CURRENCY, RE_SET_MY_ADDRESS, RE_CLEAR_MY_ADDRESS,
@@ -3126,7 +3129,7 @@ async def _private_write_blocked(update: Update, text: str, patterns) -> bool:
     if not any(p.match(text) for p in patterns):
         return False
     await update.message.reply_text(
-        "入账 / 下发 / 日切 / 清空账单 / 设置类指令请在群聊里操作；私聊只做查看和群发广播。"
+        "入账 / 下发 / 日切 / 设置类指令请在群聊里操作；私聊只做查看、清空账单和群发广播。"
     )
     return True
 

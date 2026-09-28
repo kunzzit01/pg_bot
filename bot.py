@@ -3090,6 +3090,29 @@ _RE_CMD_LOOKALIKE = re.compile(
 )
 
 
+# ---------- 私聊护栏：私聊只查看，不改账本 ----------
+# 分两批：中间夹着「计算器」——「12 + 34」这种算式和「代号 +100」的记账长得一样，
+# 必须让计算器先处理，不能一上来就被当成记账挡掉。
+_RE_PRIVATE_WRITE_EARLY = (
+    RE_CLOSE_LEDGER, RE_CLEAR_LEDGER, RE_UNDO_CLEAR_LEDGER, RE_REVOKE, RE_REVOKE_RESTORE, RE_RETRACT,
+    RE_SET_CURRENCY, RE_CHANGE_CURRENCY, RE_SET_TIMEZONE, RE_SET_IN_FEE, RE_SET_OUT_FEE, RE_SET_PERIOD_LABEL,
+    RE_SET_AUTO_CUT_TIME, RE_CANCEL_AUTO_CUT, RE_RESET_AUTO_CUT,
+    RE_HIDE_CURRENCY, RE_SHOW_CURRENCY, RE_SET_MY_ADDRESS, RE_CLEAR_MY_ADDRESS,
+    RE_ADD_GROUP_TAGS, RE_DEL_GROUP_TAGS,
+)
+_RE_PRIVATE_WRITE_ENTRY = (RE_LEDGER_ENTRY, RE_LEDGER_ENTRY_TAGGED, RE_LEDGER_DISBURSE)
+
+
+async def _private_write_blocked(update: Update, text: str, patterns) -> bool:
+    """私聊里命中「会改账本」的指令形态：回一句引导语并返回 True（调用方直接 return）。"""
+    if not any(p.match(text) for p in patterns):
+        return False
+    await update.message.reply_text(
+        "入账 / 下发 / 日切 / 清空账单 / 设置类指令请在群聊里操作；私聊只做查看和群发广播。"
+    )
+    return True
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if user is None:
@@ -3139,13 +3162,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = normalize(text)
 
-    # 私聊不支持记账：命中入账/下发/清空类指令形态时给一条引导语，不执行、不建账
-    if chat is not None and chat.type == "private":
-        if RE_LEDGER_ENTRY.match(text) or RE_LEDGER_DISBURSE.match(text) \
-                or RE_CLEAR_LEDGER.match(text) or RE_UNDO_CLEAR_LEDGER.match(text) \
-                or RE_REVOKE.match(text) or RE_REVOKE_RESTORE.match(text) or RE_RETRACT.match(text):
-            await update.message.reply_text("入账 / 下发 / 清空账单请在群聊里操作，私聊暂不支持记账。")
-            return
+    # 私聊是控台：只做查看 + 群发广播，不改账本。
+    # （ky 原来只挡了「入账/下发/清空/撤销」，日切、设置币种/时区/费率/日期、自动日切设置、
+    #   隐藏货币、收款地址、分组代号登记这些都会照做 —— 这里补齐）
+    if chat is not None and chat.type == "private" and await _private_write_blocked(
+            update, text, _RE_PRIVATE_WRITE_EARLY):
+        return
 
     # USDT 地址查重 + TRON 钱包信息卡片：群里任何人发的消息都检测，不限操作员
     await handle_usdt_addresses(update, context, text)
@@ -3166,6 +3188,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if await try_handle_calculator(update, context, text):
+        return
+
+    # 记账类（含「代号 +100」）：私聊里同样不执行。放在计算器之后，算式不受影响
+    if chat is not None and chat.type == "private" and await _private_write_blocked(
+            update, text, _RE_PRIVATE_WRITE_ENTRY):
         return
 
     if await try_handle_ledger_entry(update, context, text):

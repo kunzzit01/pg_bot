@@ -204,12 +204,53 @@ def load_json(path, default):
 
 
 def save_json(path, data):
-    # 先写临时文件再整体替换：写到一半崩溃/断电也不会留下半个文件
+    # 先写临时文件再整体替换：写到一半崩溃/断电也不会留下半个文件。
+    # 一次性 dumps + 单次 write：json.dump(fp, indent=2) 会拆成几万次小写入，
+    # 账本一大就光写盘上百毫秒（实测 1.4MB 一次约 140ms）；压紧后文件还小 ~34%，
+    # 读回来也更快。要看内容用：python -m json.tool data/ledger_entries.json
     tmp = f"{path}.tmp"
+    text = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
     with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+        f.write(text)
         f.flush()
     os.replace(tmp, path)
+
+
+# ---------- JSON 读缓存（给"一条消息里要读七八次"的大文件用）----------
+# 背景：load_ledger_entries() 在一条消息里会被调用 7 次（账单卡片 / 日切校验 / 同日同额查重…），
+# 每次都是「读文件 + json.loads」，耗时随账本大小线性增长 —— 实测 1.4MB 账本一条消息 7 次 ≈ 240ms，
+# 5.5MB ≈ 980ms，表现就是「发出去半天不回」。
+# 这里按 (mtime, size) 缓存解析结果：文件没被别处改过就直接复用；改过、或写失败，就重新读。
+# 约定：缓存给的是**共享对象**，要改就直接改、然后立刻 save_*（本文件所有写路径都是「读→改→存」）。
+_JSON_CACHE = {}
+
+
+def _json_cache_key(path):
+    try:
+        st = os.stat(path)
+        return (st.st_mtime_ns, st.st_size)
+    except OSError:
+        return None
+
+
+def load_json_cached(path, default):
+    key = _json_cache_key(path)
+    hit = _JSON_CACHE.get(path)
+    if key is not None and hit is not None and hit[0] == key:
+        return hit[1]
+    data = load_json(path, default)
+    _JSON_CACHE[path] = (key, data)
+    return data
+
+
+def save_json_cached(path, data):
+    try:
+        save_json(path, data)
+    except Exception:
+        # 写失败：宁可下次重新读盘，也不让内存里的改动看起来"已经存上了"
+        _JSON_CACHE.pop(path, None)
+        raise
+    _JSON_CACHE[path] = (_json_cache_key(path), data)
 
 
 def is_admin(user) -> bool:
@@ -560,10 +601,10 @@ def set_group_ledger_setting(chat_id, key, value):
     save_ledger_settings(data)
 
 def load_ledger_entries():
-    return load_json(LEDGER_ENTRIES_FILE, {})
+    return load_json_cached(LEDGER_ENTRIES_FILE, {})
 
 def save_ledger_entries(data):
-    save_json(LEDGER_ENTRIES_FILE, data)
+    save_json_cached(LEDGER_ENTRIES_FILE, data)
 
 def append_ledger_entry(chat_id, entry: dict):
     data = load_ledger_entries()
@@ -3078,10 +3119,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _CHAT_TITLES[str(chat.id)] = chat.title  # 网页控制台顶部展示群名称用
 
     # 带 caption 的图也必须过 OCR 查重（防止同图改 caption 重发绕过监管）；
-    # 取图口径与 handle_photo 完全一致，查重任务后台跑，caption 指令链照常往下走
+    # 取图口径与 handle_photo 完全一致，查重任务后台跑，caption 指令链照常往下走。
+    # 注意：这里同样受 OCR_SCAN_ENABLED 约束 —— 功能撤下时图片一律不下载、不识别。
     msg0 = update.message
     f0 = None
-    if msg0 is not None and ocr_bill is not None:
+    if msg0 is not None and OCR_SCAN_ENABLED and ocr_bill is not None:
         if msg0.photo:
             f0 = msg0.photo[-1]
         elif msg0.document and (msg0.document.mime_type or "").startswith("image/"):

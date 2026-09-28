@@ -237,5 +237,7 @@ cp -r /opt/ledgerbot/data /root/backup_$(date +%F)
   3. 逐文件 `git merge-file -p 我们 基线 上游最新`，冲突逐块手动取舍。
 - **上次同步（2026-09-28）**：基线 `8e3c646` → 上游 HEAD `33c66f9`。
   - 取进来的：`bot.py` 的 OCR 加固（判重即报、不再有冷却、查重库内存缓存+30秒节流落盘+7天瘦身+10万上限、限流 RetryAfter 补发、按上次所在群时区）、带 caption 的图也进查重、私聊发记账指令给引导语、全局账单隐藏全 0 的群、日切/结束账单 GrandTotal 只显数目、`/addoperator @a @b 123` 批量授权；`webconsole.py` 的 chips 候选过滤已撤销记录。
-  - 保持不变（**永远是我们这边的**）：`TOKEN` 从环境变量读、`ADMIN_USERNAMES` 名单、`OCR_SCAN_ENABLED` 默认关闭、`deploy/`、`Dockerfile`、`requirements.txt`、`.env.example`、本文件。
+  - 保持不变（**永远是我们这边的**）：`TOKEN` 从环境变量读、`ADMIN_USERNAMES` 名单、`OCR_SCAN_ENABLED` 默认关闭、`deploy/`、`Dockerfile`、`requirements.txt`、`.env.example`、本文件，
+    以及我们独有的性能/健壮性改动：**账本读缓存（`_JSON_CACHE` + `load_json_cached`/`save_json_cached`）、`save_json` 一次性写盘 + 压紧格式**、按钮网址校验、`error_handler` 的 `BadRequest` 分支、启动自检、操作员名单清洗 + 哈希 callback、OCR caption 路径的开关约束。
+    上游这些地方还是「`indent=2` 逐行写盘 + 每次重新解析账本」，合并时别退回去（否则又会变成每条消息 2 秒才回）。
   - 与上游完全一致、无需动的：`ocr_bill.py`、`api.py`、`WebBot/*`、`Map.md`、`Project.md`。

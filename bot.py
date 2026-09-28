@@ -460,7 +460,12 @@ async def addoperator_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
     if update.callback_query:
         await update.callback_query.answer()
-    await update.effective_message.reply_text("请输入要授权的操作员用户名（@开头）或用户ID（纯数字）：\n发 /cancel 取消")
+    # 带参数直接批量授权：/addoperator @a @b 123456
+    args = (context.args or []) if update.message else []
+    if args:
+        update.message.text = " ".join(args)
+        return await addoperator_receive(update, context)
+    await update.effective_message.reply_text("请输入要授权的操作员用户名（@开头）或用户ID（纯数字）：\n可一次多个，空格分隔\n发 /cancel 取消")
     return ADDOP_WAIT
 
 
@@ -1044,11 +1049,16 @@ async def build_global_bill_for_date_text(context: ContextTypes.DEFAULT_TYPE, da
         in_amount = round(in_amount, 4)
         out_amount = round(out_amount, 4)
 
+        # 进/出全为 0 且无笔数的群不显示在全局账单里
+        if in_amount == 0 and out_amount == 0 and count == 0:
+            continue
+
         try:
             chat = await context.bot.get_chat(chat_id)
             name = chat.title or chat.full_name or str(chat_id)
+            _CHAT_TITLES[chat_id_str] = name  # 拉到后写回缓存，重启/限流时群名仍可用
         except Exception:
-            name = str(chat_id)
+            name = _CHAT_TITLES.get(chat_id_str) or str(chat_id)
         name = html.escape(name)
 
         group_lines.append(f"{name} 进：{_fmt_num(in_amount)} 出：{_fmt_num(out_amount)}")
@@ -1097,6 +1107,11 @@ async def build_global_bill_text(context: ContextTypes.DEFAULT_TYPE, chat_id) ->
         out_amount = round(-sum(disburse_totals.values()), 4)
 
         period_entries = _period_entries(g_id)
+
+        # 进/出全为 0 且无笔数的群不显示在全局账单里
+        if in_amount == 0 and out_amount == 0 and not period_entries:
+            continue
+
         total_txn_count += len(period_entries)
         total_in += in_amount
         total_out += out_amount
@@ -1105,8 +1120,9 @@ async def build_global_bill_text(context: ContextTypes.DEFAULT_TYPE, chat_id) ->
         try:
             chat = await context.bot.get_chat(g_id)
             name = chat.title or chat.full_name or str(g_id)
+            _CHAT_TITLES[str(g_id)] = name  # 拉到后写回缓存，重启/限流时群名仍可用
         except Exception:
-            name = str(g_id)
+            name = _CHAT_TITLES.get(str(g_id)) or str(g_id)
         name = html.escape(name)
 
         group_lines.append(f"{name} 进：{_fmt_num(in_amount)} 出：{_fmt_num(out_amount)}")
@@ -1435,8 +1451,9 @@ async def auto_cut_job(context: ContextTypes.DEFAULT_TYPE):
 
         set_group_ledger_setting(chat_id, "auto_cut_last_date", today_str)
 
-        gt_str = " | ".join([f"{cur}: {_fmt_num(val)}" for cur, val in grand_totals.items()])
-        logger.info("[auto_cut] 群 %s 日切成功，结转总额=%s，新账期=%s", chat_id, gt_str, next_label)
+        gt_str = " | ".join([_fmt_num(val) for val in grand_totals.values()])  # 消息里只显数目；日志带币种另拼
+        log_gt = " | ".join([f"{cur}: {_fmt_num(val)}" for cur, val in grand_totals.items()])
+        logger.info("[auto_cut] 群 %s 日切成功，结转总额=%s，新账期=%s", chat_id, log_gt, next_label)
         try:
             await context.bot.send_message(
                 chat_id=chat_id,
@@ -1895,7 +1912,7 @@ async def try_handle_ledger_settings(update: Update, context: ContextTypes.DEFAU
 
     if RE_CLOSE_LEDGER.match(text):
         grand_totals, next_label, stats = close_ledger_day(chat_id)
-        gt_str = " | ".join([f"{cur}: {_fmt_num(val)}" for cur, val in grand_totals.items()])
+        gt_str = " | ".join([_fmt_num(val) for val in grand_totals.values()])  # 只显数目不显币种
         await update.message.reply_text(
             f"✅ 账单已结束！\n\n"
             f"📅 <b>新账期</b>：{next_label}\n"
@@ -3060,12 +3077,33 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if chat is not None and chat.title:
         _CHAT_TITLES[str(chat.id)] = chat.title  # 网页控制台顶部展示群名称用
 
-    text = update.message.text.strip()
+    # 带 caption 的图也必须过 OCR 查重（防止同图改 caption 重发绕过监管）；
+    # 取图口径与 handle_photo 完全一致，查重任务后台跑，caption 指令链照常往下走
+    msg0 = update.message
+    f0 = None
+    if msg0 is not None and ocr_bill is not None:
+        if msg0.photo:
+            f0 = msg0.photo[-1]
+        elif msg0.document and (msg0.document.mime_type or "").startswith("image/"):
+            f0 = msg0.document
+    if f0 is not None:
+        context.application.create_task(_ocr_process_photo(
+            update, context, f0.file_id, f0.file_unique_id, update.effective_chat))
+
+    text = (update.message.text or update.message.caption or "").strip()
     bot_username = context.bot.username
     if bot_username:
         text = text.replace(f"@{bot_username}", "").strip()
 
     text = normalize(text)
+
+    # 私聊不支持记账：命中入账/下发/清空类指令形态时给一条引导语，不执行、不建账
+    if chat is not None and chat.type == "private":
+        if RE_LEDGER_ENTRY.match(text) or RE_LEDGER_DISBURSE.match(text) \
+                or RE_CLEAR_LEDGER.match(text) or RE_UNDO_CLEAR_LEDGER.match(text) \
+                or RE_REVOKE.match(text) or RE_REVOKE_RESTORE.match(text) or RE_RETRACT.match(text):
+            await update.message.reply_text("入账 / 下发 / 清空账单请在群聊里操作，私聊暂不支持记账。")
+            return
 
     # USDT 地址查重 + TRON 钱包信息卡片：群里任何人发的消息都检测，不限操作员
     await handle_usdt_addresses(update, context, text)
@@ -3106,11 +3144,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # OCR 模块缺失（未装 rapidocr-onnxruntime）时整段自动失效，Bot 其余功能不受影响。
 
 def load_ocr_bills():
-    return load_json(OCR_BILLS_FILE, [])
+    global _OCR_BILLS_CACHE, _OCR_BILLS_LOADED
+    if not _OCR_BILLS_LOADED:
+        _OCR_BILLS_CACHE = load_json(OCR_BILLS_FILE, [])
+        _OCR_BILLS_LOADED = True
+    return _OCR_BILLS_CACHE
 
 
 def save_ocr_bills(data):
-    save_json(OCR_BILLS_FILE, data)
+    """只更新内存与 dirty 标记，由后台任务每 30 秒统一落盘（写盘节流，主循环零阻塞）。"""
+    global _OCR_BILLS_CACHE, _OCR_BILLS_DIRTY
+    _OCR_BILLS_CACHE = data
+    _OCR_BILLS_DIRTY = True
 
 
 # 「OCR 截图查重」总开关：默认关闭（功能还没对外，用户不该看到任何提示）。
@@ -3118,10 +3163,37 @@ def save_ocr_bills(data):
 # 要重新开放：.env 里设 OCR_SCAN_ENABLED=1，再 bash deploy/update.sh 重建容器。
 OCR_SCAN_ENABLED = os.environ.get("OCR_SCAN_ENABLED", "").strip().lower() in ("1", "true", "yes", "y", "on")
 
+def _ocr_archive_trim(records):
+    """上限裁剪 + 旧记录瘦身：7 天前的记录删 raw_text（查重只用指纹/单号，原文仅供回溯）。"""
+    if len(records) >= _OCR_MAX_RECORDS:
+        records = records[-(_OCR_MAX_RECORDS - 1):]
+    cutoff = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+    for r in records:
+        if r.get("time", "")[:10] < cutoff and "raw_text" in r:
+            del r["raw_text"]
+    return records
+
+
+async def _ocr_archive_flush_job(context):
+    """每 30 秒：dirty 才落盘；落盘前做上限裁剪与旧记录瘦身。"""
+    global _OCR_BILLS_DIRTY
+    if not _OCR_BILLS_DIRTY:
+        return
+    records = _ocr_archive_trim(load_ocr_bills())
+    _OCR_BILLS_CACHE = records
+    _OCR_BILLS_DIRTY = False
+    try:
+        save_json(OCR_BILLS_FILE, records)
+    except Exception:
+        _OCR_BILLS_DIRTY = True  # 写失败下次重试
+        logger.exception("OCR: 查重库落盘失败，稍后重试")
+
+
 _OCR_LOCK = asyncio.Lock()       # OCR 推理串行：防并发时内存叠加
-_OCR_MAX_RECORDS = 3000          # 查重库上限，超出丢最旧记录
-_OCR_ALERT_COOLDOWN = 30         # 同一指纹 30 秒内只报一次警，防连环重发刷屏
-_OCR_ALERT_SEEN = {}             # fingerprint -> 上次报警 time.time()
+_OCR_MAX_RECORDS = 100000        # 查重库上限，超出丢最旧记录（配合 7 天外瘦身与 30 秒节流落盘）
+_OCR_BILLS_CACHE = None          # 查重库内存缓存（load_ocr_bills/save_ocr_bills 共用）
+_OCR_BILLS_LOADED = False
+_OCR_BILLS_DIRTY = False
 
 
 def _ledger_same_day_same_amount(chat_id, amount):
@@ -3211,33 +3283,39 @@ async def _ocr_process_photo(update, context, file_id, file_unique_id, chat):
         "status": "recorded" if has_key else "unparsed",
     }
 
-    # 报警冷却：同指纹 120 秒内只报一次，连环重发同一张图不刷屏（但每次都照常入库）
+    # 无冷却：凡查重判为重复的图，即时报警（同群跨群一视同仁）；其余静默
     will_alert = reason is not None
-    if will_alert:
-        now = time_mod.time()
-        if now - _OCR_ALERT_SEEN.get(fingerprint, 0) < _OCR_ALERT_COOLDOWN:
-            will_alert = False
-        else:
-            _OCR_ALERT_SEEN[fingerprint] = now
 
-    if len(records) >= _OCR_MAX_RECORDS:
-        records = records[-(_OCR_MAX_RECORDS - 1):]
     records.append(record)
-    save_ocr_bills(records)
+    save_ocr_bills(_ocr_archive_trim(records))  # 上限裁剪+瘦身即时做，落盘由后台 30 秒统一
 
     if not will_alert:
         return  # 静默：查重通过 / 无异常 / 冷却期内，什么也不说
 
-    tz = get_ledger_tz(chat_id)
+    prev_chat = str(prev.get("chat_id") or "")  # 旧记录里 chat_id 可能存的是数字，统一转字符串再判
+    try:
+        tz_src = int(prev_chat) if prev_chat.lstrip("-").isdigit() else chat_id
+    except ValueError:
+        tz_src = chat_id
+    tz = get_ledger_tz(tz_src)  # 时间按「上次发送所在的群」的时区标注
     tz_label = f"UTC{tz.utcoffset(None).total_seconds() / 3600:+g}"
     text = (
         "⚠️ 发现重复截图\n"
         f"上次：{prev.get('time', '')}（{tz_label}）"
     )
+    # 直接回复原截图（能发版）；撞 429 限流时按 Telegram 给的秒数等待后补发，配额刷新自动续上
     try:
-        await update.message.reply_text(text)  # 引用原截图回复——全流程唯一出声点
+        await update.message.reply_text(text)
+    except RetryAfter as e:
+        wait = min(float(getattr(e, "retry_after", 0) or 0) + 1.0, 60.0)
+        logger.warning("OCR: 警报触发限流，等待 %.1fs 后补发", wait)
+        await asyncio.sleep(wait)
+        try:
+            await update.message.reply_text(text)
+        except Exception:
+            logger.exception("OCR: 重复警报补发失败")
     except Exception:
-        logger.exception("OCR: 重复报警发送失败")
+        logger.exception("OCR: 重复警报发送失败")
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3608,6 +3686,8 @@ app.add_handler(MessageHandler(filters.ALL, track_known_group), group=1)
 app.add_error_handler(error_handler)
 
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+# 带图/带媒体的指令消息（文字在 caption 里）：纯图无 caption 走下面的 OCR 查重，互不冲突
+app.add_handler(MessageHandler(filters.CAPTION & ~filters.COMMAND, handle_message))
 # OCR 截图查重监管（默认关闭，见 OCR_SCAN_ENABLED）：
 # 只有开关打开时才注册图片 handler，关掉后 Bot 所在群的图片一律不处理、不回复
 if OCR_SCAN_ENABLED:
@@ -3615,6 +3695,7 @@ if OCR_SCAN_ENABLED:
 
 if app.job_queue is not None:
     app.job_queue.run_repeating(auto_cut_job, interval=5, first=5)
+    app.job_queue.run_repeating(_ocr_archive_flush_job, interval=30, first=30)  # OCR 查重库节流落盘
     logger.info("✅ 自动日切定时任务已注册（每5秒检查一次，启动5秒后首次执行）")
 else:
     logger.critical(

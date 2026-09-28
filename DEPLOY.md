@@ -210,3 +210,16 @@ cp -r /opt/ledgerbot/data /root/backup_$(date +%F)
 - **Token 绝不写入 bot.py / Dockerfile / 任何源码**，只存 `/opt/ledgerbot/.env`（权限 600）。
 - 该 Token 曾在多处明文出现，上线后应到 @BotFather 发 `/revoke` 重生成，然后只改 `.env` 的 `BOT_TOKEN=` 行，`docker rm -f ledgerbot_container` 后重新 `docker run` 即可，代码零改动。
 - 换 Token 或改 `.env` 后都需要 `docker rm -f` + `docker run`（env 是容器启动时注入的，restart 不会重新读 .env）。
+---
+
+## 七、跟上游（ky 的原版仓库）同步
+
+- 上游：`https://github.com/kkyylim663-ux/TeleBot.git`（本地已加为 remote `upstream`）。
+- 两条线**没有共同 git 历史**（各自是上传文件攒起来的），不能直接 `git merge`，用「三方合并」：
+  1. `git fetch upstream`
+  2. **找基线**：把本地文件跟上游各版本逐一比差异行数（必须加 `--ignore-cr-at-eol`，上游是 CRLF），差异最小的那个提交就是共同基线。
+  3. 逐文件 `git merge-file -p 我们 基线 上游最新`，冲突逐块手动取舍。
+- **上次同步（2026-09-28）**：基线 `8e3c646` → 上游 HEAD `33c66f9`。
+  - 取进来的：`bot.py` 的 OCR 加固（判重即报、不再有冷却、查重库内存缓存+30秒节流落盘+7天瘦身+10万上限、限流 RetryAfter 补发、按上次所在群时区）、带 caption 的图也进查重、私聊发记账指令给引导语、全局账单隐藏全 0 的群、日切/结束账单 GrandTotal 只显数目、`/addoperator @a @b 123` 批量授权；`webconsole.py` 的 chips 候选过滤已撤销记录。
+  - 保持不变（**永远是我们这边的**）：`TOKEN` 从环境变量读、`ADMIN_USERNAMES` 名单、`OCR_SCAN_ENABLED` 默认关闭、`deploy/`、`Dockerfile`、`requirements.txt`、`.env.example`、本文件。
+  - 与上游完全一致、无需动的：`ocr_bill.py`、`api.py`、`WebBot/*`、`Map.md`、`Project.md`。

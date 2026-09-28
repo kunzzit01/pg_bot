@@ -76,10 +76,26 @@ if [ -n "${PORT}" ]; then
   fi
 fi
 
-echo "==> 2/5 准备数据目录 ${DATA_DIR}"
+echo "==> 2/6 准备数据目录 ${DATA_DIR}"
 mkdir -p "${DATA_DIR}"
 
-echo "==> 3/5 构建镜像 ${IMAGE}"
+echo "==> 3/6 校验代码语法（防文件被截断/改坏，构建前就拦住）"
+PY=""
+for cand in python3 python; do
+  if command -v "$cand" >/dev/null 2>&1 && "$cand" -c "pass" >/dev/null 2>&1; then PY="$cand"; break; fi
+done
+if [ -n "$PY" ]; then
+  "$PY" - <<'PYCODE'
+import ast
+for f in ("bot.py", "webconsole.py", "ocr_bill.py"):
+    ast.parse(open(f, encoding="utf-8").read())
+print("    语法 OK（bot.py / webconsole.py / ocr_bill.py）")
+PYCODE
+else
+  echo "    ⚠ 没找到 python3/python，跳过语法校验（建议 apt install -y python3）"
+fi
+
+echo "==> 4/6 构建镜像 ${IMAGE}"
 docker build -t "${IMAGE}" .
 
 # 同时按 commit 短哈希打一个版本标签：回退时用它秒级重建，不用重新 build
@@ -89,7 +105,7 @@ VER_SUBJECT="$(git log -1 --format=%s 2>/dev/null || echo -)"
 echo "    版本标签：${IMAGE%%:*}:${SHA}（$(echo "$VER_SUBJECT" | cut -c1-40)）"
 echo "    回退到上一个版本：bash deploy/rollback.sh"
 
-echo "==> 4/5 重建容器 ${CONTAINER}"
+echo "==> 5/6 重建容器 ${CONTAINER}"
 if docker ps -a --format '{{.Names}}' | grep -qx "${CONTAINER}"; then
   docker rm -f "${CONTAINER}" >/dev/null
   echo "    已移除旧容器（数据卷保留在 ${DATA_DIR}）"
@@ -119,10 +135,20 @@ then
   exit 1
 fi
 
-echo "==> 5/5 启动日志"
+echo "==> 6/6 启动日志 / 健康检查"
 sleep 3
 docker logs --tail 20 "${CONTAINER}"
+
+# 网页控制台健康检查（只在映射了端口时做；网页没起来不影响 Bot 本体）
+if [ -n "${PORT}" ] && command -v curl >/dev/null 2>&1; then
+  if curl -fsS "http://127.0.0.1:${PORT}/api/health" >/dev/null 2>&1; then
+    echo "✅ 网页健康检查通过：http://127.0.0.1:${PORT}/api/health"
+  else
+    echo "⚠  网页健康检查没通过（控制台没启用或没起来；Bot 本身不受影响）"
+  fi
+fi
 
 echo
 echo "完成。实时日志： docker logs -f ${CONTAINER}"
 echo "看到「记账机器人已启动，正在监听消息...」且没有 Unauthorized 就是成功。"
+echo "回退到上一个版本： bash deploy/rollback.sh"

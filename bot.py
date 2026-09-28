@@ -1090,8 +1090,8 @@ async def build_global_bill_for_date_text(context: ContextTypes.DEFAULT_TYPE, da
         in_amount = round(in_amount, 4)
         out_amount = round(out_amount, 4)
 
-        # 进/出全为 0 且无笔数的群不显示在全局账单里
-        if in_amount == 0 and out_amount == 0 and count == 0:
+        # 进/出净额全为 0 的群不显示在全局账单里（不看笔数：下发后冲正互抵、+/-互抵都算无数据）
+        if in_amount == 0 and out_amount == 0:
             continue
 
         try:
@@ -1149,8 +1149,8 @@ async def build_global_bill_text(context: ContextTypes.DEFAULT_TYPE, chat_id) ->
 
         period_entries = _period_entries(g_id)
 
-        # 进/出全为 0 且无笔数的群不显示在全局账单里
-        if in_amount == 0 and out_amount == 0 and not period_entries:
+        # 进/出净额全为 0 的群不显示在全局账单里（不看笔数：下发后冲正互抵、+/-互抵都算无数据）
+        if in_amount == 0 and out_amount == 0:
             continue
 
         total_txn_count += len(period_entries)
@@ -1224,7 +1224,7 @@ async def build_month_bill_text(context: ContextTypes.DEFAULT_TYPE, header_chat_
     1）已归档：每次日切都会往 global_bill_archive.json 写一条，账期日期属于本月的所有天累加；
     2）还没日切：该群当前账期日期属于本月时，再加上实时的未结算进/出金额。
     日切会清空该群流水，只有归档能还原历史，所以只有归档启用之后日切过的日子才统计得到。
-    本月没有任何记录（笔数和进出金额都是 0）的群不显示。"""
+    本月进出净额全为 0 的群不显示（不看笔数：下发冲正互抵、+/-互抵都算无数据）。"""
     header_tz = get_ledger_tz(header_chat_id)
     target_month = get_period_label(header_chat_id, header_tz)[:7]
 
@@ -1260,7 +1260,8 @@ async def build_month_bill_text(context: ContextTypes.DEFAULT_TYPE, header_chat_
 
         in_amount = round(in_amount, 4)
         out_amount = round(out_amount, 4)
-        if count == 0 and in_amount == 0 and out_amount == 0:
+        # 进/出净额全为 0 的群不显示在全局账单里（不看笔数：下发后冲正互抵、+/-互抵都算无数据）
+        if in_amount == 0 and out_amount == 0:
             continue
 
         try:
